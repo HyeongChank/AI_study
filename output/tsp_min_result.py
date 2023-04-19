@@ -71,21 +71,25 @@ def evaluate(current, p):
 
 def result(p, cost):
     Limit =100
-    j =0
-    while j<Limit:
+    j =1
+    k=0
+    while j<=Limit:
         c = evaluate(random_init(p), p)
         if c < cost:
             cost = c
+            k = j
 
         print(j, " " ,c)
         j +=1
-    return cost
+    return cost, k
 
 
 if __name__ == '__main__':
-    p = create_problem('./data/tsp30.txt')
+    p = create_problem('./data/tsp100.txt')
     #describe_problem(p)
     init = random_init(p)
     #print(init)
     #print(evaluate(init,p))
-    print("min : " , result(p,evaluate(init,p)))
+    a = result(p,evaluate(init,p))
+
+    print("min : ", a[1], " 회 ", a[0])

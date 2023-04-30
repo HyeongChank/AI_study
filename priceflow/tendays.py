@@ -1,61 +1,118 @@
+import yfinance as yf
 import numpy as np
-from keras.models import Sequential
-from keras.layers import LSTM, Dense
-from sklearn.preprocessing import MinMaxScaler
 import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM
+import matplotlib.pyplot as plt
+import os
 
-# 데이터 로드
 
-df = pd.read_csv('samsung.csv')
+# 삼성전자 주가 데이터 가져오기
+def load_data_scale(code, s_date, e_date):
+    stock = yf.download(code, start=s_date, end=e_date)
+    print(stock)
+    print(stock.shape)
+    stock = stock[['Close']]
+    stock = stock.dropna()
+    # 데이터 정규화 (0 ~ 1 사이의 값으로 스케일링)
+    scaler = MinMaxScaler()
+    stock = scaler.fit_transform(stock)
+    # 학습용 데이터와 검증용 데이터 분리 (train:test = 7:3)
+    train_size = int(len(stock) * 0.7)
+    test_size = len(stock) - train_size
+    train, test = stock[0:train_size,:], stock[train_size:len(stock),:]
+    return scaler, train, test
 
-# 날짜 인덱스 설정
-df['Date'] = pd.to_datetime(df['Date'])
-df.set_index('Date', inplace=True)
-
-# 데이터 전처리
-scaler = MinMaxScaler()
-data = scaler.fit_transform(df[['Close']])
+# LSTM 입력 데이터 생성 함수
 def create_dataset(dataset, look_back):
     X, Y = [], []
-    print(dataset)
-    print(dataset.size)
-    print(dataset.shape)
     for i in range(len(dataset) - look_back):
         X.append(dataset[i:(i + look_back), 0])
         Y.append(dataset[i + look_back, 0])
     return np.array(X), np.array(Y)
 
-# 학습 데이터, 테스트 데이터 분리
-start_date = '2022-05-01'
-end_date = '2022-05-10'
-look_back = 5
+def make_model(train, test, ref_back, epoch):
+    
+    # 입력 데이터 생성 (look_back = 50)
+    look_back = ref_back
+    train_X, train_Y = create_dataset(train, look_back)
+    test_X, test_Y = create_dataset(test, look_back)
 
-train_size = int(len(data) * 0.8)
-train = data[:train_size, :]
-test = data[train_size - look_back:, :]
+    # 입력 데이터의 shape 변환 (samples, time steps, features)
+    train_X = np.reshape(train_X, (train_X.shape[0], train_X.shape[1], 1))
+    test_X = np.reshape(test_X, (test_X.shape[0], test_X.shape[1], 1))
 
-# 데이터셋 생성
-train_X, train_Y = create_dataset(train, look_back)
-test_X, test_Y = create_dataset(test, look_back)
+    # LSTM 모델 구성
+    model = Sequential()
+    model.add(LSTM(128, input_shape=(look_back, 1)))
+    model.add(Dense(1))
+    model.compile(loss='mean_squared_error', optimizer='adam')
 
-# LSTM 모델 구성
-model = Sequential()
-model.add(LSTM(128, input_shape=(look_back, 1)))
-model.add(Dense(1))
-model.compile(loss='mean_squared_error', optimizer='adam')
+    # 모델 학습
+    model.fit(train_X, train_Y, epochs=epoch, batch_size=32, verbose=2)
 
-# 모델 학습
-model.fit(train_X, train_Y, epochs=20, batch_size=32, verbose=2)
+    # 예측 결과
+    train_predict = model.predict(train_X)
+    test_predict = model.predict(test_X)
+    return train_predict, test_predict, train_Y, test_Y, train_X
 
-# 예측 결과
-test_input = np.array([test[-look_back:, 0]])
-test_input = np.reshape(test_input, (test_input.shape[0], test_input.shape[1], 1))
+def make_unscale(train_predict, test_predict, train_Y, test_Y, scaler):
+    # 정규화 된 값을 다시 원래의 값으로 변환
+    train_predict = scaler.inverse_transform(train_predict)
+    train_Y = scaler.inverse_transform([train_Y])
+    test_predict = scaler.inverse_transform(test_predict)
+    test_Y = scaler.inverse_transform([test_Y])
+    # 예측값
+    print(train_Y)
+    # 실제값
+    print(test_Y)
+    return train_predict, train_Y, test_predict, test_Y
 
-preds = []
-for i in range(10):
-    pred = model.predict(test_input)[0][0]
-    preds.append(pred)
-    test_input = np.append(test_input[:, 1:, :], [[pred]], axis=1)
+def predict_to_df(train_predict, train_Y, test_predict, test_Y):
+    # 예측 결과를 데이터프레임에 저장
+    train_predict_df = pd.DataFrame(train_predict, columns=['train_predict'])
+    train_Y_df = pd.DataFrame(train_Y[0], columns=['train_actual'])
+    test_predict_df = pd.DataFrame(test_predict, columns=['test_predict'])
+    test_Y_df = pd.DataFrame(test_Y[0], columns=['test_actual'])
+    return train_predict_df, train_Y_df
 
-preds = scaler.inverse_transform(np.array(preds).reshape(-1, 1))
-print(preds)
+def make_graph(train_predict_df, train_Y_df, code, s_date, e_date):
+    stock_rd = yf.download(code, start=s_date, end=e_date)
+    fig, (ax1, ax2) = plt.subplots(2,1)
+    # Plot 1
+    ax1.plot(stock_rd.index, stock_rd['Adj Close'], label='stock')
+    ax1.set_title('Stock Prices')
+    ax1.set_ylabel('Price')
+    ax1.tick_params(axis='x', labelsize=6)   
+    ax1.legend()
+    # Plot 2
+    ax2.plot(train_predict_df, label='train predict')
+    ax2.plot(train_Y_df, label='train actual')
+   
+    ax2.legend()
+ # 저장 경로 설정
+    save_dir = os.path.join(os.getcwd(), 'static')
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    save_path = os.path.join(save_dir, 'graph.png')
+
+    # 그래프 저장
+    plt.savefig(save_path)
+
+    return save_path
+    # plt.show()
+
+def process(s_date, e_date, code):
+    epoch = 30
+    # ref_back(start 4월 1일 end 4월 30일 ref_bake 10 이면 3월 20일~ 4월 20일 까지 데이터 이용)
+    ref_back = 5
+    scaler, train, test = load_data_scale(code, s_date, e_date)
+    train_predict, test_predict, train_Y, test_Y, train_X = make_model(train, test, ref_back, epoch)
+    train_predict, train_Y, test_predict, test_Y = make_unscale(train_predict, test_predict, train_Y, test_Y, scaler)
+    train_predict_df, train_Y_df = predict_to_df(train_predict, train_Y, test_predict, test_Y)
+    make_graph(train_predict_df, train_Y_df, code, s_date, e_date)
+    
+    
+
+  
